@@ -87,7 +87,7 @@ typedef struct {
     uint16_t qs[CUDA_QK_K / 8];
 } cuda_block_iq2_xxs;
 
-#include "ds4_iq2_tables_cuda.inc"
+#include "ds4_cuda_iq2_tables.cuh"
 
 #include "rocm/ds4_rocm_runtime.cuh"
 

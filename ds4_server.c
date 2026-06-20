@@ -62,26 +62,26 @@ typedef struct {
     size_t cap;
 } buf;
 
-static void die(const char *msg) {
+static inline void die(const char *msg) {
     fprintf(stderr, "ds4-server: %s\n", msg);
     exit(1);
 }
 
-static void *xmalloc(size_t n) {
+static inline void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
     if (!p) die("out of memory");
     return p;
 }
 
-static void *xrealloc(void *p, size_t n) {
+static inline void *xrealloc(void *p, size_t n) {
     p = realloc(p, n ? n : 1);
     if (!p) die("out of memory");
     return p;
 }
 
-static char *xstrdup(const char *s) {
+static inline char *xstrdup(const char *s) {
     size_t n = strlen(s);
-    char *p = xmalloc(n + 1);
+    char* p = xmalloc(n + 1);
     memcpy(p, s, n + 1);
     return p;
 }
@@ -104,7 +104,7 @@ static bool random_bytes(void *dst, size_t len) {
     return true;
 }
 
-static char *xstrndup(const char *s, size_t n) {
+static inline char *xstrndup(const char *s, size_t n) {
     char *p = xmalloc(n + 1);
     memcpy(p, s, n);
     p[n] = '\0';
@@ -432,20 +432,20 @@ static bool json_content(const char **p, char **out) {
     (*p)++;
     buf b = {0};
     json_ws(p);
-    while (**p && **p != ']') {
-        if (**p == '"') {
+    while (**p && **p != "]") {
+        if (**p == "\"") {
             char *s = NULL;
             if (!json_string(p, &s)) goto fail;
             buf_puts(&b, s);
             free(s);
-        } else if (**p == '{') {
+        } else if (**p == "{") {
             (*p)++;
             json_ws(p);
-            while (**p && **p != '}') {
+            while (**p && **p != "}") {
                 char *key = NULL;
                 if (!json_string(p, &key)) goto fail;
                 json_ws(p);
-                if (**p != ':') {
+                if (**p != ":") {
                     free(key);
                     goto fail;
                 }
@@ -464,19 +464,19 @@ static bool json_content(const char **p, char **out) {
                 }
                 free(key);
                 json_ws(p);
-                if (**p == ',') (*p)++;
+                if (**p == ",") (*p)++;
                 json_ws(p);
             }
-            if (**p != '}') goto fail;
+            if (**p != "}") goto fail;
             (*p)++;
         } else if (!json_skip_value(p)) {
             goto fail;
         }
         json_ws(p);
-        if (**p == ',') (*p)++;
+        if (**p == ",") (*p)++;
         json_ws(p);
     }
-    if (**p != ']') goto fail;
+    if (**p != "]") goto fail;
     (*p)++;
     *out = buf_take(&b);
     return true;

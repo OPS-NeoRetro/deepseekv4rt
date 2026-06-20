@@ -615,7 +615,7 @@ typedef struct {
     char error[256];
 } ds4_cursor;
 
-static void ds4_die(const char *msg) {
+static inline void ds4_die(const char *msg) {
     fprintf(stderr, "ds4: %s\n", msg);
     exit(1);
 }
@@ -643,17 +643,17 @@ static uint32_t ds4_expected_layer_compress_ratio(uint32_t il) {
     return 0;
 }
 
-static void ds4_die_errno(const char *what, const char *path) {
+static inline void ds4_die_errno(const char *what, const char *path) {
     fprintf(stderr, "ds4: %s '%s': %s\n", what, path, strerror(errno));
     exit(1);
 }
 
-static bool ds4_streq(ds4_str s, const char *z) {
+static inline bool ds4_streq(ds4_str s, const char *z) {
     size_t n = strlen(z);
     return s.len == n && memcmp(s.ptr, z, n) == 0;
 }
 
-static bool ds4_str_eq(ds4_str a, ds4_str b) {
+static inline bool ds4_str_eq(ds4_str a, ds4_str b) {
     return a.len == b.len && memcmp(a.ptr, b.ptr, a.len) == 0;
 }
 
