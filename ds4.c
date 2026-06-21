@@ -691,35 +691,35 @@ static inline void ds4_alloc_guard_check(const char *op, size_t size) {
     exit(1);
 }
 
-static void *xcalloc(size_t n, size_t size) {
+static inline void *xcalloc(size_t n, size_t size) {
     ds4_alloc_guard_check("calloc", n * size);
     void *p = calloc(n, size);
     if (!p) ds4_die("out of memory");
     return p;
 }
 
-static void *xmalloc(size_t size) {
+static inline void *xmalloc(size_t size) {
     ds4_alloc_guard_check("malloc", size);
     void *p = malloc(size);
     if (!p) ds4_die("out of memory");
     return p;
 }
 
-static char *ds4_strdup(const char *s) {
+static inline char *ds4_strdup(const char *s) {
     size_t n = strlen(s);
     char *p = xmalloc(n + 1);
     memcpy(p, s, n + 1);
     return p;
 }
 
-static void *xrealloc(void *ptr, size_t size) {
+static inline void *xrealloc(void *ptr, size_t size) {
     ds4_alloc_guard_check("realloc", size);
     void *p = realloc(ptr, size);
     if (!p) ds4_die("out of memory");
     return p;
 }
 
-static void *xmalloc_zeroed(size_t n, size_t size) {
+static inline void *xmalloc_zeroed(size_t n, size_t size) {
     if (size != 0 && n > SIZE_MAX / size) ds4_die("allocation size overflow");
     const size_t total = n * size;
     void *p = xmalloc(total ? total : 1);
