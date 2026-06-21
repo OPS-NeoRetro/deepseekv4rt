@@ -8,17 +8,7 @@
 #define DS4_GPU_LOG_PREFIX "ds4: ROCm "
 #define DS4_GPU_BLAS_NAME "hipBLAS"
 #else
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <mma.h>
-#include <cublas_v2.h>
-#include <cub/block/block_radix_sort.cuh>
-
-#define FULL_WARP_MASK 0xFFFFFFFFu
-#define MASK_T uint32_t
-#define DS4_GPU_BACKEND_NAME "CUDA"
-#define DS4_GPU_LOG_PREFIX "ds4: CUDA "
-#define DS4_GPU_BLAS_NAME "cuBLAS"
+#error "error: ROCm source code is compiled for CUDA"
 #endif
 
 #include <stdint.h>
@@ -87,7 +77,7 @@ typedef struct {
     uint16_t qs[CUDA_QK_K / 8];
 } cuda_block_iq2_xxs;
 
-#include "ds4_iq2_tables_cuda.inc"
+#include "ds4_cuda_iq2_tables.cuh"
 
 #include "rocm/ds4_rocm_runtime.cuh"
 
@@ -120,6 +110,7 @@ typedef struct {
 #include "rocm/ds4_rocm_shared_expert.cuh"
 
 #include "rocm/ds4_rocm_misc_launch.cuh"
+
 #include "rocm/ds4_rocm_router.cuh"
 
 #include "rocm/ds4_rocm_moe.cuh"
