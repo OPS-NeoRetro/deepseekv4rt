@@ -149,13 +149,6 @@ __global__ static void matmul_f32_kernel(
     if (threadIdx.x == 0) out[tok * out_dim + row] = partial[0];
 }
 
-__global__ static void repeat_hc_kernel(float *out, const float *row, uint32_t n_embd, uint32_t n_hc) {
-    uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    uint64_t n = (uint64_t)n_embd * n_hc;
-    if (i >= n) return;
-    out[i] = row[i % n_embd];
-}
-
 __global__ static void f32_to_f16_kernel(__half *out, const float *x, uint64_t n) {
     uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __float2half(x[i]);

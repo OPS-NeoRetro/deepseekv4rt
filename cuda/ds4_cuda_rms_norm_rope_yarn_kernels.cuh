@@ -230,6 +230,28 @@ __global__ static void rope_tail_kernel(
     tail[i + 1] = x0 * s + x1 * c;
 }
 
+extern "C" int ds4_gpu_rope_tail_tensor(
+    ds4_gpu_tensor *x,
+    uint32_t n_tok,
+    uint32_t n_head,
+    uint32_t head_dim,
+    uint32_t n_rot,
+    uint32_t pos0,
+    uint32_t n_ctx_orig,
+    bool inverse,
+    float freq_base,
+    float freq_scale,
+    float ext_factor,
+    float attn_factor,
+    float beta_fast,
+    float beta_slow
+) {
+    if (!x || n_rot > head_dim || (n_rot & 1) || x->bytes < (uint64_t)n_tok * n_head * head_dim * sizeof(float)) return 0;
+    uint32_t pairs = n_tok * n_head * (n_rot / 2);
+    rope_tail_kernel<<<(pairs + 255) / 256, 256>>>((float *)x->ptr, n_tok, n_head, head_dim, n_rot, pos0, 1, n_ctx_orig, inverse ? 1 : 0, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    return cuda_ok(cudaGetLastError(), "rope_tail launch");
+}
+
 __device__ static float rope_yarn_ramp_cpu_equiv_dev(float low, float high, int i0) {
     float y = ((float)(i0 / 2) - low) / fmaxf(0.001f, high - low);
     return 1.0f - fminf(1.0f, fmaxf(0.0f, y));

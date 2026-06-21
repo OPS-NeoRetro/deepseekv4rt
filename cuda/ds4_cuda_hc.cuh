@@ -188,3 +188,21 @@ __global__ static void output_hc_weights_kernel(
     float z = pre[gid] * scale[0] + base[h];
     out[gid] = 1.0f / (1.0f + expf(-z)) + epsv;
 }
+
+__global__ static void repeat_hc_kernel(float *out, const float *row, uint32_t n_embd, uint32_t n_hc) {
+    uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t n = (uint64_t)n_embd * n_hc;
+    if (i >= n) return;
+    out[i] = row[i % n_embd];
+}
+
+extern "C" int ds4_gpu_repeat_hc_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *row, uint32_t n_embd, uint32_t n_hc) {
+    if (!out || !row || n_embd == 0 || n_hc == 0 ||
+        row->bytes < (uint64_t)n_embd * sizeof(float) ||
+        out->bytes < (uint64_t)n_embd * n_hc * sizeof(float)) {
+        return 0;
+    }
+    uint64_t n = (uint64_t)n_embd * n_hc;
+    repeat_hc_kernel<<<(n + 255) / 256, 256>>>((float *)out->ptr, (const float *)row->ptr, n_embd, n_hc);
+    return cuda_ok(cudaGetLastError(), "repeat_hc launch");
+}
