@@ -2679,3 +2679,25 @@ extern "C" void ds4_gpu_set_quality(bool quality) {
         (void)cublasSetMathMode(g_cublas, math_mode);
     }
 }
+
+__device__ static float dev_f16_to_f32(uint16_t v) {
+    return __half2float(*reinterpret_cast<const __half *>(&v));
+}
+
+__device__ static float half_warp_sum_f32(float v, uint32_t lane16) {
+    uint32_t mask = 0xffffu << (threadIdx.x & 16u);
+    for (int offset = 8; offset > 0; offset >>= 1) {
+        v += __shfl_down_sync(mask, v, offset, 16);
+    }
+    (void)lane16;
+    return v;
+}
+
+__device__ static float quarter_warp_sum_f32(float v, uint32_t lane8) {
+    uint32_t mask = 0xffu << (threadIdx.x & 24u);
+    for (int offset = 4; offset > 0; offset >>= 1) {
+        v += __shfl_down_sync(mask, v, offset, 8);
+    }
+    (void)lane8;
+    return v;
+}

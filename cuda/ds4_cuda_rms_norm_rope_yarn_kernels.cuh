@@ -175,7 +175,7 @@ __global__ static void head_rms_norm_rope_tail_kernel(
     }
 }
 
-xtern "C" int ds4_gpu_rms_norm_plain_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t n, float eps) {
+extern "C" int ds4_gpu_rms_norm_plain_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t n, float eps) {
     if (!out || !x || out->bytes < (uint64_t)n * sizeof(float) ||
         x->bytes < (uint64_t)n * sizeof(float)) return 0;
     rms_norm_plain_kernel<<<1, 256>>>((float *)out->ptr, (const float *)x->ptr, n, 1, eps);
@@ -352,7 +352,18 @@ __device__ static float rope_yarn_ramp_cpu_equiv_dev(float low, float high, int 
     return 1.0f - fminf(1.0f, fmaxf(0.0f, y));
 }
 
-__device__ static DS4_CUDA_UNUSED void rope_tail_one_dev(float *x, uint32_t head_dim, uint32_t n_rot, uint32_t pos, uint32_t n_ctx_orig, float freq_base, float freq_scale, float ext_factor, float attn_factor, float beta_fast, float beta_slow) {
+__device__ static DS4_CUDA_UNUSED void rope_tail_one_dev(
+        float *x,
+        uint32_t head_dim,
+        uint32_t n_rot,
+        uint32_t pos,
+        uint32_t n_ctx_orig,
+        float freq_base,
+        float freq_scale,
+        float ext_factor,
+        float attn_factor,
+        float beta_fast,
+        float beta_slow) {
     uint32_t n_nope = head_dim - n_rot;
     float corr0 = 0.0f, corr1 = 0.0f;
     if (ext_factor != 0.0f) {
@@ -377,4 +388,36 @@ __device__ static DS4_CUDA_UNUSED void rope_tail_one_dev(float *x, uint32_t head
         x[n_nope + i] = x0 * c - x1 * s;
         x[n_nope + i + 1] = x0 * s + x1 * c;
     }
+}
+
+extern "C" int ds4_gpu_attn_q_b_f16_head_rms_rope_tail_tensor(
+        ds4_gpu_tensor *out,
+        ds4_gpu_tensor *q_half,
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t weight_offset,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        const ds4_gpu_tensor *x,
+        uint32_t n_tok,
+        uint32_t n_head,
+        uint32_t head_dim,
+        uint32_t n_rot,
+        uint32_t pos0,
+        uint32_t n_ctx_orig,
+        bool inverse,
+        float freq_base,
+        float freq_scale,
+        float ext_factor,
+        float attn_factor,
+        float beta_fast,
+        float beta_slow,
+        float eps) {
+    (void)out; (void)q_half; (void)model_map; (void)model_size;
+    (void)weight_offset; (void)in_dim; (void)out_dim; (void)x;
+    (void)n_tok; (void)n_head; (void)head_dim; (void)n_rot; (void)pos0;
+    (void)n_ctx_orig; (void)inverse; (void)freq_base; (void)freq_scale;
+    (void)ext_factor; (void)attn_factor; (void)beta_fast; (void)beta_slow;
+    (void)eps;
+    return 0;
 }
