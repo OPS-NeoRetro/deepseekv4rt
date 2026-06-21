@@ -826,7 +826,7 @@ static int ds4_expert_hotlist_sort_cmp(const void *a, const void *b) {
     return 0;
 }
 
-#include "ds4_streaming_hotlist.inc"
+#include "ds4_streaming_hotlist.h"
 
 static void ds4_json_write_string(FILE *fp, const char *s) {
     fputc('"', fp);
