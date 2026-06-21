@@ -365,3 +365,298 @@ __global__ static void grouped_q8_0_a_preq_warp8_kernel(
     acc = warp_sum_f32(acc);
     if (lane == 0) low[tok * low_dim + row] = acc;
 }
+
+static int cuda_matmul_q8_0_tensor_labeled(
+    ds4_gpu_tensor *out,
+    const void *model_map,
+    uint64_t model_size,
+    uint64_t weight_offset,
+    uint64_t in_dim,
+    uint64_t out_dim,
+    const ds4_gpu_tensor *x,
+    uint64_t n_tok,
+    const char *label) {
+    if (!out || !x || !model_map) return 0;
+    uint64_t blocks = (in_dim + 31) / 32;
+    if (weight_offset > model_size || out_dim > UINT64_MAX / (blocks * 34)) return 0;
+    uint64_t weight_bytes = out_dim * blocks * 34;
+    if (weight_bytes > model_size - weight_offset) return 0;
+    if (x->bytes < n_tok * in_dim * sizeof(float) ||
+        out->bytes < n_tok * out_dim * sizeof(float)) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, "q8_0");
+    if (!wptr) return 0;
+    if (g_cublas_ready && n_tok > 1) {
+        const float *w_f32 = cuda_q8_f32_ptr(model_map, weight_offset, weight_bytes, in_dim, out_dim, label);
+        if (w_f32) {
+            const float alpha = 1.0f;
+            const float beta = 0.0f;
+            cublasStatus_t st = cublasSgemm(
+                g_cublas,
+                CUBLAS_OP_T,
+                CUBLAS_OP_N,
+                (int)out_dim,
+                (int)n_tok,
+                (int)in_dim,
+                &alpha,
+                w_f32,
+                (int)in_dim,
+                (const float *)x->ptr,
+                (int)in_dim,
+                &beta,
+                (float *)out->ptr,
+                (int)out_dim
+            );
+            return cublas_ok(st, "q8 fp32 matmul");
+        }
+        const __half *w_f16 = cuda_q8_f16_ptr(model_map, weight_offset, weight_bytes, in_dim, out_dim, label);
+        if (w_f16) {
+            const uint64_t xh_count = n_tok * in_dim;
+            __half *xh = (__half *)cuda_tmp_alloc(xh_count * sizeof(__half), "q8 f16 gemm activations");
+            if (!xh) return 0;
+            f32_to_f16_kernel<<<(xh_count + 255) / 256, 256>>>(xh, (const float *)x->ptr, xh_count);
+            if (!cuda_ok(cudaGetLastError(), "q8 f16 activation convert launch")) return 0;
+            const float alpha = 1.0f;
+            const float beta = 0.0f;
+            cublasStatus_t st = cublasGemmEx(g_cublas,
+                                             CUBLAS_OP_T,
+                                             CUBLAS_OP_N,
+                                             (int)out_dim,
+                                             (int)n_tok,
+                                             (int)in_dim,
+                                             &alpha,
+                                             w_f16,
+                                             CUDA_R_16F,
+                                             (int)in_dim,
+                                             xh,
+                                             CUDA_R_16F,
+                                             (int)in_dim,
+                                             &beta,
+                                             out->ptr,
+                                             CUDA_R_32F,
+                                             (int)out_dim,
+                                             CUDA_R_32F,
+                                             CUBLAS_GEMM_DEFAULT);
+            if (st == CUBLAS_STATUS_SUCCESS) return 1;
+            fprintf(stderr, "ds4: cuBLAS q8 f16 matmul failed: status %d\n", (int)st);
+            cuda_q8_f16_cache_disable_after_failure("cuBLAS f16 matmul failure",
+                                                    in_dim * out_dim * sizeof(__half));
+            /* The F16 expansion cache is only an optimization.  If cuBLAS
+             * rejects the cached path under memory pressure, retry the same
+             * operation through the native Q8 kernels below. */
+        }
+    }
+    const uint64_t xq_bytes = n_tok * blocks * 32u;
+    const uint64_t scale_offset = (xq_bytes + 15u) & ~15ull;
+    const uint64_t tmp_bytes = scale_offset + n_tok * blocks * sizeof(float);
+    void *tmp = cuda_tmp_alloc(tmp_bytes, "q8_0 prequant");
+    if (!tmp) return 0;
+    int8_t *xq = (int8_t *)tmp;
+    float *xscale = (float *)((char *)tmp + scale_offset);
+    const int use_dp4a = cuda_q8_use_dp4a();
+    dim3 qgrid((unsigned)blocks, (unsigned)n_tok, 1);
+    quantize_q8_0_f32_kernel<<<qgrid, 32>>>(xq, xscale, (const float *)x->ptr, in_dim, blocks);
+    if (!cuda_ok(cudaGetLastError(), "matmul_q8_0 quantize launch")) return 0;
+    if (n_tok == 1) {
+        matmul_q8_0_preq_warp8_kernel<<<((unsigned)out_dim + 7u) / 8u, 256>>>(
+            (float *)out->ptr,
+            reinterpret_cast<const unsigned char *>(wptr),
+            xq,
+            xscale,
+            in_dim,
+            out_dim,
+            blocks,
+            use_dp4a
+        );
+        return cuda_ok(cudaGetLastError(), "matmul_q8_0 warp launch");
+    }
+    if (getenv("DS4_CUDA_NO_Q8_BATCH_WARP") == NULL && blocks <= 32u) {
+        dim3 bgrid(((unsigned)out_dim + 7u) / 8u, (unsigned)n_tok, 1);
+        matmul_q8_0_preq_batch_warp8_kernel<<<bgrid, 256>>>(
+                (float *)out->ptr,
+                reinterpret_cast<const unsigned char *>(wptr),
+                xq,
+                xscale,
+                in_dim,
+                out_dim,
+                n_tok,
+                blocks,
+                use_dp4a);
+        return cuda_ok(cudaGetLastError(), "matmul_q8_0 batch warp launch");
+    }
+    dim3 grid((unsigned)out_dim, (unsigned)n_tok, 1);
+    matmul_q8_0_preq_kernel<<<grid, 256>>>((float *)out->ptr,
+                                           reinterpret_cast<const unsigned char *>(wptr),
+                                           xq,
+                                           xscale,
+                                           in_dim, out_dim, n_tok, blocks,
+                                           use_dp4a);
+    return cuda_ok(cudaGetLastError(), "matmul_q8_0 launch");
+}
+
+extern "C" int ds4_gpu_matmul_q8_0_tensor(
+    ds4_gpu_tensor *out,
+    const void *model_map,
+    uint64_t model_size,
+    uint64_t weight_offset,
+    uint64_t in_dim,
+    uint64_t out_dim,
+    const ds4_gpu_tensor *x,
+    uint64_t n_tok) {
+    return cuda_matmul_q8_0_tensor_labeled(out, model_map, model_size, weight_offset,
+                                           in_dim, out_dim, x, n_tok, "q8_0");
+}
+
+extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
+        ds4_gpu_tensor *out0,
+        ds4_gpu_tensor *out1,
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t weight0_offset,
+        uint64_t weight1_offset,
+        uint64_t in_dim,
+        uint64_t out0_dim,
+        uint64_t out1_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t n_tok) {
+    if (!out0 || !out1 || !x || !model_map || in_dim == 0 || out0_dim == 0 || out1_dim == 0 || n_tok == 0) {
+        return 0;
+    }
+    if (n_tok != 1) {
+        return cuda_matmul_q8_0_tensor_labeled(out0, model_map, model_size, weight0_offset,
+                                               in_dim, out0_dim, x, n_tok, "q8_0_pair0") &&
+               cuda_matmul_q8_0_tensor_labeled(out1, model_map, model_size, weight1_offset,
+                                               in_dim, out1_dim, x, n_tok, "q8_0_pair1");
+    }
+    const uint64_t blocks = (in_dim + 31) / 32;
+    if (weight0_offset > model_size || weight1_offset > model_size ||
+        out0_dim > UINT64_MAX / (blocks * 34) ||
+        out1_dim > UINT64_MAX / (blocks * 34)) {
+        return 0;
+    }
+    const uint64_t weight0_bytes = out0_dim * blocks * 34;
+    const uint64_t weight1_bytes = out1_dim * blocks * 34;
+    if (weight0_bytes > model_size - weight0_offset ||
+        weight1_bytes > model_size - weight1_offset ||
+        x->bytes < in_dim * sizeof(float) ||
+        out0->bytes < out0_dim * sizeof(float) ||
+        out1->bytes < out1_dim * sizeof(float)) {
+        return 0;
+    }
+    const char *w0 = cuda_model_range_ptr(model_map, weight0_offset, weight0_bytes, "q8_0_pair0");
+    const char *w1 = cuda_model_range_ptr(model_map, weight1_offset, weight1_bytes, "q8_0_pair1");
+    if (!w0 || !w1) return 0;
+
+    const uint64_t xq_bytes = blocks * 32u;
+    const uint64_t scale_offset = (xq_bytes + 15u) & ~15ull;
+    const uint64_t tmp_bytes = scale_offset + blocks * sizeof(float);
+    void *tmp = cuda_tmp_alloc(tmp_bytes, "q8_0 pair prequant");
+    if (!tmp) return 0;
+    int8_t *xq = (int8_t *)tmp;
+    float *xscale = (float *)((char *)tmp + scale_offset);
+    const int use_dp4a = cuda_q8_use_dp4a();
+    dim3 qgrid((unsigned)blocks, 1, 1);
+    quantize_q8_0_f32_kernel<<<qgrid, 32>>>(xq, xscale, (const float *)x->ptr, in_dim, blocks);
+    if (!cuda_ok(cudaGetLastError(), "matmul_q8_0 pair quantize launch")) return 0;
+    const uint64_t max_out = out0_dim > out1_dim ? out0_dim : out1_dim;
+    matmul_q8_0_pair_preq_warp8_kernel<<<((unsigned)max_out + 7u) / 8u, 256>>>(
+        (float *)out0->ptr,
+        (float *)out1->ptr,
+        reinterpret_cast<const unsigned char *>(w0),
+        reinterpret_cast<const unsigned char *>(w1),
+        xq,
+        xscale,
+        in_dim,
+        out0_dim,
+        out1_dim,
+        blocks,
+        use_dp4a
+    );
+    return cuda_ok(cudaGetLastError(), "matmul_q8_0 pair warp launch");
+}
+
+extern "C" int ds4_gpu_matmul_q8_0_f16_out_tensor(
+        ds4_gpu_tensor *out_h,
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t weight_offset,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t n_tok
+) {
+    (void)out_h;
+    (void)model_map;
+    (void)model_size;
+    (void)weight_offset;
+    (void)in_dim;
+    (void)out_dim;
+    (void)x;
+    (void)n_tok;
+    return 0;
+}
+
+static int cuda_matmul_q8_0_hc_expand_tensor_labeled(
+        ds4_gpu_tensor       *out_hc,
+        ds4_gpu_tensor       *block_out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *block_add,
+        const ds4_gpu_tensor *residual_hc,
+        const ds4_gpu_tensor *split,
+        uint32_t                n_embd,
+        uint32_t                n_hc,
+        const char             *label) {
+    if (!out_hc || !block_out || !x || !residual_hc || !split || !model_map ||
+        in_dim == 0 || out_dim == 0 || n_embd == 0 || n_hc == 0 ||
+        out_dim != (uint64_t)n_embd) {
+        return 0;
+    }
+    const uint64_t blocks = (in_dim + 31) / 32;
+    if (weight_offset > model_size || out_dim > UINT64_MAX / (blocks * 34)) return 0;
+    const uint64_t weight_bytes = out_dim * blocks * 34;
+    const uint64_t hc_bytes = (uint64_t)n_hc * n_embd * sizeof(float);
+    const uint64_t split_bytes = (uint64_t)(2u * n_hc + n_hc * n_hc) * sizeof(float);
+    if (weight_bytes > model_size - weight_offset ||
+        x->bytes < in_dim * sizeof(float) ||
+        block_out->bytes < out_dim * sizeof(float) ||
+        residual_hc->bytes < hc_bytes ||
+        split->bytes < split_bytes ||
+        out_hc->bytes < hc_bytes ||
+        (block_add && block_add->bytes < out_dim * sizeof(float))) {
+        return 0;
+    }
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, label ? label : "q8_0_hc_expand");
+    if (!wptr) return 0;
+
+    const uint64_t xq_bytes = blocks * 32u;
+    const uint64_t scale_offset = (xq_bytes + 15u) & ~15ull;
+    const uint64_t tmp_bytes = scale_offset + blocks * sizeof(float);
+    void *tmp = cuda_tmp_alloc(tmp_bytes, "q8_0 hc expand prequant");
+    if (!tmp) return 0;
+    int8_t *xq = (int8_t *)tmp;
+    float *xscale = (float *)((char *)tmp + scale_offset);
+    const int use_dp4a = cuda_q8_use_dp4a();
+    quantize_q8_0_f32_kernel<<<(unsigned)blocks, 32>>>(xq, xscale, (const float *)x->ptr, in_dim, blocks);
+    if (!cuda_ok(cudaGetLastError(), "matmul_q8_0_hc_expand quantize launch")) return 0;
+    matmul_q8_0_hc_expand_preq_warp8_kernel<<<((unsigned)out_dim + 7u) / 8u, 256>>>(
+            (float *)out_hc->ptr,
+            (float *)block_out->ptr,
+            block_add ? (const float *)block_add->ptr : (const float *)block_out->ptr,
+            (const float *)residual_hc->ptr,
+            (const float *)split->ptr,
+            reinterpret_cast<const unsigned char *>(wptr),
+            xq,
+            xscale,
+            in_dim,
+            out_dim,
+            n_embd,
+            n_hc,
+            blocks,
+            block_add ? 1 : 0,
+            use_dp4a);
+    return cuda_ok(cudaGetLastError(), "matmul_q8_0_hc_expand launch");
+}

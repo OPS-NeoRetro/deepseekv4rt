@@ -35,7 +35,9 @@ __global__ static void rms_norm_weight_kernel(float *out, const float *x, const 
     partial[threadIdx.x] = sum;
     __syncthreads();
     for (uint32_t stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride) partial[threadIdx.x] += partial[threadIdx.x + stride];
+        if (threadIdx.x < stride) {
+            partial[threadIdx.x] += partial[threadIdx.x + stride];
+        }
         __syncthreads();
     }
     float scale = rsqrtf(partial[0] / (float)n + eps);
@@ -100,7 +102,10 @@ __global__ static void head_rms_norm_kernel(float *x, uint32_t n_tok, uint32_t n
     for (uint32_t i = threadIdx.x; i < head_dim; i += blockDim.x) xr[i] *= scale;
 }
 
-__device__ static float rope_yarn_ramp_dev(float low, float high, int i0);
+__device__ static float rope_yarn_ramp_dev(float low, float high, int i0) {
+    float y = ((float)(i0 / 2) - low) / fmaxf(0.001f, high - low);
+    return 1.0f - fminf(1.0f, fmaxf(0.0f, y));
+}
 
 __global__ static void head_rms_norm_rope_tail_kernel(
         float *x,
@@ -170,9 +175,99 @@ __global__ static void head_rms_norm_rope_tail_kernel(
     }
 }
 
-__device__ static float rope_yarn_ramp_dev(float low, float high, int i0) {
-    float y = ((float)(i0 / 2) - low) / fmaxf(0.001f, high - low);
-    return 1.0f - fminf(1.0f, fmaxf(0.0f, y));
+xtern "C" int ds4_gpu_rms_norm_plain_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t n, float eps) {
+    if (!out || !x || out->bytes < (uint64_t)n * sizeof(float) ||
+        x->bytes < (uint64_t)n * sizeof(float)) return 0;
+    rms_norm_plain_kernel<<<1, 256>>>((float *)out->ptr, (const float *)x->ptr, n, 1, eps);
+    return cuda_ok(cudaGetLastError(), "rms_norm_plain launch");
+}
+extern "C" int ds4_gpu_rms_norm_plain_rows_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t n, uint32_t rows, float eps) {
+    if (!out || !x || out->bytes < (uint64_t)n * rows * sizeof(float) ||
+        x->bytes < (uint64_t)n * rows * sizeof(float)) return 0;
+    rms_norm_plain_kernel<<<rows, 256>>>((float *)out->ptr, (const float *)x->ptr, n, rows, eps);
+    return cuda_ok(cudaGetLastError(), "rms_norm_plain launch");
+}
+extern "C" int ds4_gpu_rms_norm_weight_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint32_t n, float eps) {
+    if (!out || !x || !model_map || weight_offset > model_size ||
+        model_size - weight_offset < (uint64_t)n * sizeof(float) ||
+        out->bytes < (uint64_t)n * sizeof(float) ||
+        x->bytes < (uint64_t)n * sizeof(float)) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, (uint64_t)n * sizeof(float), "rms_weight");
+    if (!wptr) return 0;
+    const float *w = (const float *)wptr;
+    rms_norm_weight_kernel<<<1, 256>>>((float *)out->ptr, (const float *)x->ptr, w, n, 1, eps);
+    return cuda_ok(cudaGetLastError(), "rms_norm_weight launch");
+}
+extern "C" int ds4_gpu_rms_norm_weight_rows_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint32_t n, uint32_t rows, float eps) {
+    if (!out || !x || !model_map || weight_offset > model_size ||
+        model_size - weight_offset < (uint64_t)n * sizeof(float) ||
+        out->bytes < (uint64_t)n * rows * sizeof(float) ||
+        x->bytes < (uint64_t)n * rows * sizeof(float)) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, (uint64_t)n * sizeof(float), "rms_weight");
+    if (!wptr) return 0;
+    const float *w = (const float *)wptr;
+    rms_norm_weight_kernel<<<rows, 256>>>((float *)out->ptr, (const float *)x->ptr, w, n, rows, eps);
+    return cuda_ok(cudaGetLastError(), "rms_norm_weight launch");
+}
+extern "C" int ds4_gpu_dsv4_qkv_rms_norm_rows_tensor(
+        ds4_gpu_tensor       *q_out,
+        const ds4_gpu_tensor *q,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                q_weight_offset,
+        uint32_t                q_n,
+        ds4_gpu_tensor       *kv_out,
+        const ds4_gpu_tensor *kv,
+        uint64_t                kv_weight_offset,
+        uint32_t                kv_n,
+        uint32_t                rows,
+        float                   eps) {
+    if (getenv("DS4_CUDA_DISABLE_QKV_RMS_FUSED") == NULL) {
+        if (!q_out || !q || !kv_out || !kv || !model_map ||
+            q_weight_offset > model_size ||
+            kv_weight_offset > model_size ||
+            model_size - q_weight_offset < (uint64_t)q_n * sizeof(float) ||
+            model_size - kv_weight_offset < (uint64_t)kv_n * sizeof(float) ||
+            q_out->bytes < (uint64_t)q_n * rows * sizeof(float) ||
+            q->bytes < (uint64_t)q_n * rows * sizeof(float) ||
+            kv_out->bytes < (uint64_t)kv_n * rows * sizeof(float) ||
+            kv->bytes < (uint64_t)kv_n * rows * sizeof(float)) {
+            return 0;
+        }
+        const float *q_w = (const float *)cuda_model_range_ptr(model_map,
+                q_weight_offset, (uint64_t)q_n * sizeof(float), "q_rms_weight");
+        const float *kv_w = (const float *)cuda_model_range_ptr(model_map,
+                kv_weight_offset, (uint64_t)kv_n * sizeof(float), "kv_rms_weight");
+        if (!q_w || !kv_w) return 0;
+        dim3 grid(rows, 2u, 1u);
+        dsv4_qkv_rms_norm_rows_kernel<<<grid, 256>>>(
+                (float *)q_out->ptr,
+                (const float *)q->ptr,
+                q_w,
+                q_n,
+                (float *)kv_out->ptr,
+                (const float *)kv->ptr,
+                kv_w,
+                kv_n,
+                rows,
+                eps);
+        return cuda_ok(cudaGetLastError(), "dsv4 qkv rms norm rows launch");
+    }
+    return ds4_gpu_rms_norm_weight_rows_tensor(q_out, q, model_map, model_size,
+                                                 q_weight_offset, q_n, rows, eps) &&
+           ds4_gpu_rms_norm_weight_rows_tensor(kv_out, kv, model_map, model_size,
+                                                 kv_weight_offset, kv_n, rows, eps);
+}
+extern "C" int ds4_gpu_head_rms_norm_tensor(ds4_gpu_tensor *x, uint32_t n_tok, uint32_t n_head, uint32_t head_dim, float eps) {
+    if (!x || x->bytes < (uint64_t)n_tok * n_head * head_dim * sizeof(float)) return 0;
+    head_rms_norm_kernel<<<n_tok * n_head, 256>>>((float *)x->ptr, n_tok, n_head, head_dim, eps);
+    return cuda_ok(cudaGetLastError(), "head_rms_norm launch");
+}
+extern "C" int ds4_gpu_head_rms_norm_rope_tail_tensor(ds4_gpu_tensor *x, uint32_t n_tok, uint32_t n_head, uint32_t head_dim, uint32_t n_rot, uint32_t pos0, uint32_t n_ctx_orig, bool inverse, float freq_base, float freq_scale, float ext_factor, float attn_factor, float beta_fast, float beta_slow, float eps) {
+    if (!x || n_rot > head_dim || (n_rot & 1u) ||
+        x->bytes < (uint64_t)n_tok * n_head * head_dim * sizeof(float)) return 0;
+    head_rms_norm_rope_tail_kernel<<<n_tok * n_head, 256>>>((float *)x->ptr, n_tok, n_head, head_dim, n_rot, pos0, n_ctx_orig, inverse ? 1 : 0, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow, eps);
+    return cuda_ok(cudaGetLastError(), "head_rms_norm_rope_tail launch");
 }
 
 __global__ static void rope_tail_kernel(
