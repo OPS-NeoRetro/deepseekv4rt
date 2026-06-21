@@ -72,11 +72,11 @@ static const char DS4_REASONING_EFFORT_MAX_PREFIX[] =
  * asks for a reasoning budget the allocated context is not meant to hold. */
 #define DS4_THINK_MAX_MIN_CONTEXT 393216u
 
-static bool ds4_backend_uses_graph(ds4_backend backend) {
+static inline bool ds4_backend_uses_graph(ds4_backend backend) {
     return backend == DS4_BACKEND_METAL || backend == DS4_BACKEND_CUDA;
 }
 
-static bool ds4_backend_supports_ssd_streaming(ds4_backend backend) {
+static inline bool ds4_backend_supports_ssd_streaming(ds4_backend backend) {
     if (backend == DS4_BACKEND_METAL) return true;
     if (backend == DS4_BACKEND_CUDA) {
 #if defined(DS4_ROCM_BUILD) || (!defined(DS4_NO_GPU) && !defined(__APPLE__))
@@ -88,7 +88,7 @@ static bool ds4_backend_supports_ssd_streaming(ds4_backend backend) {
     return false;
 }
 
-static bool ds4_backend_supports_streaming_auto_cache(ds4_backend backend) {
+static inline bool ds4_backend_supports_streaming_auto_cache(ds4_backend backend) {
     if (backend == DS4_BACKEND_METAL) return true;
 #ifdef DS4_ROCM_BUILD
     if (backend == DS4_BACKEND_CUDA) return true;
@@ -670,17 +670,17 @@ static uint64_t hash_bytes(const void *ptr, uint64_t len) {
 static bool g_alloc_guard_enabled;
 static const char *g_alloc_guard_phase;
 
-static void ds4_alloc_guard_begin(const char *phase) {
+static inline void ds4_alloc_guard_begin(const char *phase) {
     g_alloc_guard_phase = phase;
     g_alloc_guard_enabled = true;
 }
 
-static void ds4_alloc_guard_end(void) {
+static inline void ds4_alloc_guard_end(void) {
     g_alloc_guard_enabled = false;
     g_alloc_guard_phase = NULL;
 }
 
-static void ds4_alloc_guard_check(const char *op, size_t size) {
+static inline void ds4_alloc_guard_check(const char *op, size_t size) {
     if (!g_alloc_guard_enabled) return;
     fprintf(stderr,
             "ds4: internal allocation during %s: %s(%zu). "
