@@ -100,6 +100,8 @@ typedef struct {
 
 #include "ds4_cuda_moe.cuh"
 
+#include 
+
 #include "ds4_cuda_moe_launch.cuh"
 
 #include "ds4_cuda_hc_launch.cuh"
